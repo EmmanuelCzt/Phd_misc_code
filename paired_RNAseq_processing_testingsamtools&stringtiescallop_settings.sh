@@ -22,30 +22,29 @@ echo "***paired alignement using hisat2***" |& tee -a paired_alignement.log
 for i in `cat ${sample_list}`
 do
    echo $i
-   hisat2 -p 8 --dta -x ${idxgenome} -1 $i\_R1.fastq.bz2 -2 $i\_R2.fastq.bz2 -S map/$i.sam |& tee -a paired_alignement.log
+   hisat2 -p 8 --dta -x ${idxgenome} -1 $i\_R1.fastq.gz -2 $i\_R2.fastq.gz -S map/$i.sam |& tee -a paired_alignement.log
  done
 
 echo "***paired alignement done***" |& tee -a paired_alignement.log
 
 # Sorting uniquely mapping reads for transcript reconstruction and 
-echo "***generation of uniquely mapping reads files***" |& tee -a paired_alignement.log
+echo "***generation of uniquely mapping reads files & removal of multimapping/PCR duplicates reads***" |& tee -a paired_alignement.log
 for i in `cat ${sample_list}`
 do
   echo $i |& tee -a paired_alignement.log
-  samtools view -@ 8 -q 10 -F 1280 -h -b map/$i.sorted.bam > map/$i.sorted.F1280.bam |& tee -a paired_alignement.log # Remove multi mapping reads (flag : 256) and PCR duplciate (1024)
-  samtools view -@ 8 -q 10 -F 1024 -h -b map/$i.sorted.bam > map/$i.sorted.F1024.bam |& tee -a paired_alignement.log # Impact of multi mapping reads on transcript reconstruction
-done
-
-#sort and formatting to bam & 8 threads
-echo "***sam sorting & bam generation***" 2>&1 | tee > paired_alignement.log
-for i in `cat ${sample_list}`
-do
-  echo $i |& tee -a paired_alignement.log
-  samtools sort -@ 8 -h -o map/$i.sorted.bam map/$i.sam |& tee -a paired_alignement.log
+  samtools view -@ 8 -q 10 -F 1280 -h -b map/$i.sam > map/$i.F1280.bam |& tee -a paired_alignement.log # Remove multi mapping reads (flag : 256) and PCR duplciate (1024)
 done
 
 echo "***bam generation done & deleting sam files" |& tee -a paired_alignement.log
 rm -r map/*.sam
+
+#sort and formatting to bam & 8 threads
+echo "***bam sorting***" 2>&1 | tee > paired_alignement.log
+for i in `cat ${sample_list}`
+do
+  echo $i |& tee -a paired_alignement.log
+  samtools sort -@ 8 -h -o map/$i.F1280.sorted.bam map/$i.F1280.bam |& tee -a paired_alignement.log
+done
 
 # generating stat files : Pre clean-up
 echo "***generation of stats files***" |& tee -a paired_alignement.log

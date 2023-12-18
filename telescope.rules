@@ -1,0 +1,41 @@
+configfile: "config_rhesus.yaml"
+
+RepeatModel = "/media/emmanuel/CR_Vol2/Transposome_quantification/annotations/rhemac10_rmsk_ERV_MER_merged10_feat_NoOvlpPCG.gtf"
+
+rule all:
+    input:
+        expand("telescope_rhesus/{sample}/telescope-telescope_report.tsv", sample=config["samples"])
+
+
+rule SAM_sort:
+	input:
+		"map_rhemac10_rhemac10/{sample}_rhemac10Aligned.sortedByCoord.out.bam"
+	output:
+		"map_rhemac10_rhemac10/{sample}_rhemac10Aligned.sortedByName.out.bam"
+	log:
+		"logs/SAM_sort/{sample}.log"
+	threads: 6
+	shell:
+		"(samtools sort -@ {threads} -o {output} {input}) 2> {log}"
+
+rule SAM_index:
+	input:
+		"map_rhemac10_rhemac10/{sample}_rhemac10Aligned.sortedByName.out.bam"
+	output:
+		"map_rhemac10_rhemac10/{sample}_rhemac10Aligned.sortedByName.out.bam.bai"
+	log:
+		"logs/SAM_index/{sample}.log"
+	shell:
+		"(samtools index {input}) 2> {log}"
+
+rule telescope:
+	input:
+		"map_rhemac10/{sample}_rhemac10Aligned.sortedByName.out.bam",
+		gtf=RepeatModel
+	output:
+		"telescope_rhesus/{sample}/telescope-telescope_report.tsv"
+	params:
+		attribute="locus_id"
+	shell:
+		"(telescope assign --attribute ${attribute} ${input} ${gtf})"
+

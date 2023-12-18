@@ -1,0 +1,226 @@
+#configfile: "config.yaml"
+
+#SAMPLES = H9 Miguel without BaseRecalibrator (ref)
+
+rule all:
+    input:
+        expand("vcf/H9primedMC_hg38_NoBaseRecal_Hardfiltered.vcf")
+
+#rule samtools_merge:
+#    input:
+#        bam1="/home/emmanuel/Documents/Omics_dataset/RNASeq/H9primed_Miguel/map/D165T29.F1280.sorted.bam",
+#        bam2="/home/emmanuel/Documents/Omics_dataset/RNASeq/H9primed_Miguel/map/D165T30.F1280.sorted.bam",
+#        bam3="/home/emmanuel/Documents/Omics_dataset/RNASeq/H9primed_Miguel/map/D165T31.F1280.sorted.bam"
+#    output:
+#        temp("bam/H9primedMC_merged.bam")
+#    threads: 16
+#    shell:
+#        "(samtools merge -@ {threads} {output} {input.bam1} {input.bam2} {input.bam3})"
+
+rule samtools_sort:
+    input:
+        "/home/emmanuel/Documents/Omics_dataset/RNASeq/H9primed_Miguel/map/H9primedMC_merge.bam"
+    output:
+        temp("bam/H9primedMC_merged_sorted.bam")
+    threads: 6
+    shell:
+        "(samtools sort -@ {threads} \
+            -o {output} \
+            {input})"
+
+rule uniq_reads:
+    input:
+        bam="bam/H9primedMC_merged_sorted.bam"
+    output:
+        protected("bam/H9primedMC_merged_sorted_uniq.bam")
+    params: qual=10
+    shell:
+        "(samtools view -q {params.qual} -b {input.bam} > {output})"
+
+rule samtools_index:
+    input: 
+        bam="bam/H9primedMC_merged_sorted_uniq.bam"
+    output: 
+        protected("bam/H9primedMC_merged_sorted_uniq.bam.bai")
+    params:
+        "" # optional params string
+    wrapper:
+        "0.30.0/bio/samtools/index"
+
+rule AddOrReplaceReadGroups:
+    input:
+        bam="bam/H9primedMC_merged_sorted_uniq.bam",
+        bai="bam/H9primedMC_merged_sorted_uniq.bam.bai"
+    output: "bam/H9primedMC_merged_sorted_uniq_rg.bam"
+    params:
+        SO="coordinate",
+        RGID="id",
+        RGLB="library",
+        RGPL="platform",
+        RGPU="machine",
+        RGSM="sample"
+    shell:
+        "(java -jar /home/emmanuel/software/picard/picard.jar  AddOrReplaceReadGroups \
+            I={input.bam} \
+            O={output} \
+            SO={params.SO} \
+            RGID={params.RGID} \
+            RGLB={params.RGLB} \
+            RGPL={params.RGPL} \
+            RGPU={params.RGPU} \
+            RGSM={params.RGSM})"
+
+
+rule MarkDuplicates:
+    input: "bam/H9primedMC_merged_sorted_uniq_rg.bam"
+    output: protected("bam/H9primedMC_merged_sorted_uniq_rg_dedupp.bam") # Protected because check point 
+    params:
+            CREATE_INDEX="true",
+            VALIDATION_STRINGENCY="SILENT",
+            REMOVE_DUPLICATES="true",
+            ASSUME_SORTED="true",
+            M="output.metrics"
+    shell:
+        "(java -jar /home/emmanuel/software/picard/picard.jar MarkDuplicates \
+            I={input} \
+            O={output} \
+            CREATE_INDEX={params.CREATE_INDEX} \
+            VALIDATION_STRINGENCY={params.VALIDATION_STRINGENCY} \
+            REMOVE_DUPLICATES={params.REMOVE_DUPLICATES} \
+            ASSUME_SORTED={params.ASSUME_SORTED} \
+            M={params.M})"
+
+#rule mpileup:
+#    input:
+#        bam="bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split_recal.bam",
+#        bai="bam/{sample}_sorted_uniq_rg_dedupp_split_recal.bam.bai",
+#        csi="bam/{sample}_sorted_uniq_rg_dedupp_split_recal.bam.csi"
+#    output: "bam/{sample}_RNAseq.vcf"
+#    params:
+#        threads=12,
+#        adjust=0,
+#        region="chr7,chr8,chrX",
+#        fasta="/home/emmanuel/Documents/Genomes/hg38/hg38.fa",
+#        filter="\'QUAL<10 || DP<10\'",
+#    shell:
+#        "(bcftools mpileup --threads {params.threads} \
+#        -I -C {params.adjust} \
+#        -r {params.region} \
+#        -f {params.fasta} {input.bam} | \
+#        bcftools call --threads {params.threads} -m | \
+#        bcftools filter --threads {params.threads} \
+#        -e {params.filter} > {output})"
+
+
+rule samtools_index_csi:
+    input: "bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split.bam"
+    output: protected("bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split.bam.csi")
+    params:
+        "" # optional params string
+    shell:
+        "(samtools index -c {input})"
+
+rule samtools_index_bai:
+    input: "bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split.bam"
+    output: protected("bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split.bam.bai")
+    params:
+        "" # optional params string
+    shell:
+        "(samtools index {input})"
+
+rule SplitNCigarReads:
+    input:
+        bam="bam/H9primedMC_merged_sorted_uniq_rg_dedupp.bam"
+    output:
+        temp("bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split.bam")
+    params:
+        ref="/home/emmanuel/Documents/Genomes/hg38/hg38.fa"
+    shell:
+        "(java -jar /home/emmanuel/software/gatk-4.1.5.0/gatk-package-4.1.5.0-local.jar SplitNCigarReads \
+            -R {params.ref} \
+            -I {input.bam} \
+            -O {output})"
+
+
+rule BaseRecalibrator:
+    input:
+        bam="bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split.bam"
+    output: temp("bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split_recal.table")
+    params:
+        ref="/home/emmanuel/Documents/Genomes/hg38/hg38.fa",
+        dbsnp146="/run/user/1000/gvfs/smb-share:server=172.27.25.120,share=data/Louis/dbSNP/dbsnp_146.hg38.vcf.gz"
+    shell:
+        "(java -jar /home/emmanuel/software/gatk-4.1.5.0/gatk-package-4.1.5.0-local.jar BaseRecalibrator -I {input.bam} \
+            -R {params.ref} \
+            --known-sites {params.dbsnp146} \
+            -O {output})"
+
+rule ApplyBQSR:
+    input:
+        bam="bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split.bam",
+        bqsr="bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split_recal.table"
+    output:
+        protected("bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split_recal.bam")
+    params:
+        ref="/home/emmanuel/Documents/Genomes/hg38/hg38.fa"
+    shell:
+        "(java -jar /home/emmanuel/software/gatk-4.1.5.0/gatk-package-4.1.5.0-local.jar ApplyBQSR \
+            -R {params.ref} \
+            -I {input.bam} \
+            -bqsr {input.bqsr} \
+            -O {output})"
+
+rule HaplotypeCaller:
+    input:
+        bam="bam/H9primedMC_merged_sorted_uniq_rg_dedupp_split.bam"
+    params:
+        ref="/home/emmanuel/Documents/Genomes/hg38/hg38.fa",
+        stand_call_conf=10.0
+    output:
+        "vcf/H9primedMC_hg38.vcf"
+    shell:
+        "(java -jar /home/emmanuel/software/gatk-4.1.5.0/gatk-package-4.1.5.0-local.jar HaplotypeCaller \
+            -R {params.ref} \
+            -I {input.bam} \
+            --dont-use-soft-clipped-bases \
+            -stand-call-conf {params.stand_call_conf} \
+            -O {output})"
+
+
+
+rule IndexFeatureFile:
+    input: "vcf/H9primedMC_hg38.vcf"
+    output: "vcf/H9primedMC_hg38.vcf.idx"
+    shell:
+        "java -jar /home/emmanuel/software/gatk-4.1.5.0/gatk-package-4.1.5.0-local.jar IndexFeatureFile \
+            -I {input}"
+
+rule VariantFiltration:
+    input:
+        vcf="vcf/H9primedMC_hg38.vcf",
+        index="vcf/H9primedMC_hg38.vcf.idx"
+    output:
+        "vcf/H9primedMC_hg38_NoBaseRecal_Hardfiltered.vcf"
+    params:
+        ref="/home/emmanuel/Documents/Genomes/hg38/hg38.fa",
+    shell:
+        "(java -jar /home/emmanuel/software/gatk-4.1.5.0/gatk-package-4.1.5.0-local.jar VariantFiltration \
+        -R {params.ref} \
+        -V {input.vcf} \
+        -window 50 \
+        -cluster 3 \
+        --filter-name 'FS' \
+        -filter 'FS > 60.0' \
+        --filter-name 'QD' \
+        -filter 'QD < 2.0' \
+        --filter-name 'SOR' \
+        -filter 'SOR > 3.0' \
+        --filter-name 'MQ' \
+        -filter 'MQ < 40.0' \
+        --filter-name 'MQRankSum' \
+        -filter 'MQRankSum < -12.5' \
+        --filter-name 'MQPosRankSum' \
+        -filter 'MQPosRankSum < -8.0' \
+        -O {output})"
+
+
