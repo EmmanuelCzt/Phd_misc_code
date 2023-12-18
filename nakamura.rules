@@ -1,0 +1,54 @@
+configfile: "config.yaml"
+
+rule all:
+    input:
+        expand("map/{sample}_sorted.bam.bai", sample=config["samples"])
+
+
+
+
+rule trimming:
+	input:
+		csfasta="{sample}_F3.csfasta.gz",
+		qual="{sample}_F3_QV.qual.gz"
+	output:
+		"trimming/{sample}_trimmed.fasta.gz"
+	log:
+		"logs/trimming/{sample}.log"
+	threads: 1
+	params:
+		error=0.1,
+		qual=20,
+		count=2,
+		minovlp=1,
+		minlen=30,
+		trim="AAAAAAAAAAAAAAAAAAAA"
+	shell:
+		"(cutadapt -c -e {params.error} -q {params.qual} -n {params.count} -O {params.minovlp} -m {params.minlen} -a {params.trim} -g CTCGAGGGCGCGCCGGATCCATATACGCCTTGGCCGTACAGCAG -o {output} {input.csfasta} {input.qual}) 2> {log}"
+
+rule mapping:
+	input:
+		fasta="trimming/{sample}_trimmed.fasta.gz",
+	output: temp("map/{sample}/accepted_hits.bam")
+	log:  "logs/mapping/{sample}.log"
+	params:
+		index="/home/emmanuel/Documents/rheMac10_bowtie1/rheMac10ColSPC",
+		outdir="map/{sample}"
+	shell:
+		"(tophat --bowtie1 -C -o {params.outdir} --no-coverage-search {params.index} {input.fasta}) 2> {log}"
+
+rule sort:
+	input: "map/{sample}/accepted_hits.bam"
+	output: "map/{sample}_sorted.bam"
+	log:  "logs/sort/{sample}.log"
+	params:
+		fmt="bam"
+	shell:
+		" (samtools sort -O {params.fmt} -o {output} {input}) 2> {log}"
+
+rule index:
+	input: "map/{sample}_sorted.bam"
+	output: "map/{sample}_sorted.bam.bai"
+	log:  "logs/index/{sample}.log"
+	shell:
+		 "(samtools index {input})"

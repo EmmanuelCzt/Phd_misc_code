@@ -1,0 +1,189 @@
+configfile: "config2.yaml"
+
+refGTF = "/home/emmanuel/Documents/annotations/rheMac10/Macaca_mulatta.Mmul_10.98.UCSC.XICRNA.gtf"
+
+#Classic pipeline to go from fastq reads to gene counts using STAR
+#SAMPLES = Testing scRNAseq read to count table pipeline : ERR1041403
+
+rule all:
+    input:
+        expand("count/{sample}_count.tsv", sample=config["samples"])
+
+rule fastqc:
+	input:
+		fastq1="{sample}_R1.fastq.gz",
+		fastq2="{sample}_R2.fastq.gz",
+	output:
+		"fastqc/{sample}_fastqc.html"
+	log:
+		"logs/fastqc/{sample}.log"
+	threads: 12
+	shell:
+		"(fastqc -t {threads} -o fastqc/ {input.fastq1} {input.fastq2}) 2> {log}"
+
+rule trimming:
+	input:
+		fastq1="{sample}.fastq.gz" # if seconde file fastq2 + -o out1 -p out2
+	output:
+		"trimmed/{sample}_trimmed.fastq.gz"
+	log:
+		"logs/cutA/{sample}.log"
+	threads: 12
+	params:
+		minqual= 20,
+		minsize=35,
+	shell:
+		"(cutadapt -q {params.minqual} -m {params.minsize} -j {threads} -o {output} {input.fastq1}) 2> {log} "
+
+
+
+rule SAM_uniq:
+	input:
+		"map/{sample}_rheMac10Aligned.out.bam"
+	output:
+		temp("map/{sample}_rheMac10_uniq.bam")
+	log:
+		"logs/SAM_uniq/{sample}.log"
+	threads: 6
+	params:
+		qual=10,
+		filtre="1280"
+	shell:
+		"(samtools view -@ {threads} -q {params.qual} -F {params.filtre} -h -b {input} > {output}) 2> {log}"
+
+rule SAM_sort:
+	input:
+		"map/{sample}_rheMac10_uniq.bam"
+	output:
+		"map/{sample}_rheMac10_uniq_sorted.bam"
+	log:
+		"logs/SAM_sort/{sample}.log"
+	threads: 6
+	shell:
+		"(samtools sort -@ {threads} -o {output} {input}) 2> {log}"
+
+rule SAM_index:
+	input:
+		"map/{sample}_rheMac10_uniq_sorted.bam"
+	output:
+		protected("map/{sample}_rheMac10_uniq_sorted.bam.bai")
+	log:
+		"logs/SAM_index/{sample}.log"
+	shell:
+		"(samtools index {input}) 2> {log}"
+
+rule SAM_idxstat:
+	input:
+		bam="map/{sample}_uniq_sorted.bam"
+	output:
+		protected("stats/{sample}.stats")
+	log:
+		"logs/SAM_stats/{sample}.log"
+	shell:
+		"(samtools idxstats {input} > {output}) 2> {log}"
+
+rule htseq_count: #slow don't use it
+	input:
+		bam="map/{sample}_rheMac10_uniq_sorted.bam",
+		bai="map/{sample}_rheMac10_uniq_sorted.bam.bai",
+		gtf="/home/emmanuel/Documents/annotations/rheMac10/gencode.v35.rheMac10.annotation.gtf"
+	output:
+		countF="htseq_count/{sample}_count.tsv",
+		countS="htseq_count/{sample}_count.tsv.summary",
+		tmp=temp("htseq_count/{sample}_count.temp")
+	log:
+		"logs/htseq_count/{sample}.log"
+	params:
+		#r="name",
+		format="bam",
+		stranded="no",
+		type="exon",
+		idattr="gene_id"
+	shell:
+		"(htseq-count --format={params.format} \
+		--stranded={params.stranded} --type={params.type} \
+		--idattr={params.idattr} -c {output.tmp} {input.bam} {input.gtf} && sed '/^__/ d' {output.tmp} > {output.countF} && grep '__' {output.tmp} > {output.countS}) 2> {log}"
+
+rule feature_count:
+	input:
+		bam="map/{sample}.bam",
+		bai="map/{sample}.bam.bai",
+		gtf=refGTF
+	output:
+		wholeTable="count/{sample}_featureCountRaw.tsv",
+		countF="count/{sample}_count.tsv"
+	log:
+		"logs/featureCount/{sample}.log"
+	threads: 6
+	params:
+		type="exon",
+		idattr="gene_id"
+	shell:
+		"(featureCounts -p -T {threads} -t {params.type} -g {params.idattr} -a {input.gtf} -o {output.wholeTable} {input.bam} && tail -n +3 {output.wholeTable} | cut -f1,7 > {output.countF}) 2> {log}"
+
+rule counts_to_TPM:
+	input:
+		count="htseq_count/{sample}_htseqRaw_NotStranded.txt",
+		gtf="/home/emmanuel/Documents/annotations/rheMac10/Macaca_mulatta.Mmul_10.98.UCSC.XICRNA.sorted.gtf"
+	output:
+		out="htseq_count/{sample}_htseq_NotStranded.TPM"
+	script:
+		"scripts_snake/RNASeq_counts_to_TPM.R"
+
+rule bigwig_forward:
+    input:
+        bam="map/{sample}_uniq_sorted.bam"
+    output: protected("bigwig/{sample}_BPM_chrX_forward.bw")
+    threads: 8
+    params:
+        filterRNAstrand="forward",
+        normalizeUsing="BPM",
+        binSize=20,
+        smoothLength=40,
+        region="chrX"
+    log: "logs/{sample}_BPM_chrX_forward.bw"
+    shell:
+        "(bamCoverage -b {input.bam} --normalizeUsing {params.normalizeUsing} --binSize {params.binSize} --smoothLength {params.smoothLength} -r {params.region} -p {threads} -o {output}) 2> {log}"
+
+rule bigwig_reverse:
+    input:
+        bam="map/{sample}_uniq_sorted.bam"
+    output: protected("bigwig/{sample}_BPM_chrX_reverse.bw")
+    threads: 8
+    params:
+        filterRNAstrand="reverse",
+        normalizeUsing="BPM",
+        binSize=20,
+        smoothLength=40,
+        region="chrX"
+    log: "logs/{sample}_BPM_chrX_reverse.bw"
+    shell:
+        "(bamCoverage -b {input.bam} --filterRNAstrand {params.filterRNAstrand} \
+        --normalizeUsing {params.normalizeUsing}  --binSize {params.binSize} \
+        --smoothLength {params.smoothLength} \
+        -r {params.region} \
+        -p {threads} -o {output}) 2> {log}"
+
+rule scallop:
+	input:
+		"map/{sample}_uniq_sorted.bam"
+	output:
+		"annotation/{sample}.scallop.gtf"
+	log:
+		"logs/scallop/{sample}.log"
+	params:
+		tx_length=200,
+		flk_length=10,
+		spl_reads=3,
+		gap=25,
+		cov=1,
+		sgl_cov=20
+	shell:
+		"(scallop -i {input} \
+		--min_transcript_length_base {params.tx_length} \
+		--min_flank_length {params.flk_length} \
+		--min_splice_bundary_hits {params.spl_reads} \
+		--min_bundle_gap {params.gap} \
+		--min_transcript_coverage {params.cov} \
+		--min_single_exon_coverage {params.sgl_cov} \
+		-o {output}) 2> {log}"

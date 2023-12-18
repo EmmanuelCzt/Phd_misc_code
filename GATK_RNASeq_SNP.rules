@@ -1,0 +1,235 @@
+configfile: "config.yaml"
+
+refgenome = "/home/emmanuel/Documents/Genomes/hg38/hg38.fa"
+DBspns = "/home/emmanuel/Documents/Genomes/hg38/dbsnp_146.hg38.vcf.gz"
+
+rule all:
+    input:
+        expand("table/{sample}_Hardfiltered_Q100_DP10_QD7.tab", sample=config["samples"])
+
+rule uniq_reads:
+    input:
+        bam="map/{sample}_merged.bam"
+    output:
+        temp("map/{sample}_merged_uniq.bam")
+    params: 
+        qual=20,
+        filtre=1280
+    shell:
+        "(samtools view -q {params.qual} -F {params.filtre} -h -b {input.bam} > {output})"
+
+rule samtools_sort:
+    input:
+        "map/{sample}_merged_uniq.bam"
+    output:
+        temp("map/{sample}_merged_uniq_sorted.bam")
+    threads: 6
+    shell:
+        "(samtools sort -@ {threads} \
+            -o {output} \
+            {input})"
+
+
+rule SAM_index:
+    input:
+        "map/{sample}_merged_uniq_sorted.bam"
+    output:
+        temp("map/{sample}_merged_uniq_sorted.bam.bai")
+    shell:
+        "(samtools index {input})"
+
+rule AddOrReplaceReadGroups:
+    input:
+        bam="map/{sample}_merged_uniq_sorted.bam",
+        bai="map/{sample}_merged_uniq_sorted.bam.bai"
+    output: temp("map/{sample}_merged_uniq_sorted_rg.bam")
+    params:
+        SO="coordinate",
+        RGID="id",
+        RGLB="library",
+        RGPL="platform",
+        RGPU="machine",
+        RGSM="sample"
+    shell:
+        "(/home/emmanuel/software/gatk-4.1.8.0/gatk  AddOrReplaceReadGroups \
+            -I {input.bam} \
+            -O {output} \
+            -SO {params.SO} \
+            -ID {params.RGID} \
+            -LB {params.RGLB} \
+            -PL {params.RGPL} \
+            -PU {params.RGPU} \
+            -SM {params.RGSM})"
+
+
+rule MarkDuplicates:
+    input: "map/{sample}_merged_uniq_sorted_rg.bam"
+    output: temp("map/{sample}_merged_uniq_sorted_rg_dedupp.bam") 
+    params:
+            CREATE_INDEX="true",
+            VALIDATION_STRINGENCY="SILENT",
+            REMOVE_DUPLICATES="true",
+            ASSUME_SORTED="true",
+            M="output.metrics"
+    shell:
+        "(/home/emmanuel/software/gatk-4.1.8.0/gatk MarkDuplicates \
+            -I {input} \
+            -O {output} \
+            --CREATE_INDEX {params.CREATE_INDEX} \
+            --VALIDATION_STRINGENCY {params.VALIDATION_STRINGENCY} \
+            --REMOVE_DUPLICATES {params.REMOVE_DUPLICATES} \
+            --ASSUME_SORTED {params.ASSUME_SORTED} \
+            -M {params.M})"
+
+
+rule samtools_index_csi:
+    input: "map/{sample}_merged_uniq_sorted_rg_dedupp_split.bam"
+    output: protected("map/{sample}_merged_uniq_sorted_rg_dedupp_split.bam.csi")
+    params:
+        "" # optional params string
+    shell:
+        "(samtools index -c {input})"
+
+rule samtools_index_bai:
+    input: "map/{sample}_merged_uniq_sorted_rg_dedupp_split.bam"
+    output: protected("map/{sample}_merged_uniq_sorted_rg_dedupp_split.bam.bai")
+    params:
+        "" # optional params string
+    shell:
+        "(samtools index {input})"
+
+rule SplitNCigarReads:
+    input:
+        bam="map/{sample}_merged_uniq_sorted_rg_dedupp.bam"
+    output:
+        protected("map/{sample}_merged_uniq_sorted_rg_dedupp_split.bam")
+    params:
+        ref=refgenome
+    shell:
+        "(/home/emmanuel/software/gatk-4.1.8.0/gatk SplitNCigarReads \
+            -R {params.ref} \
+            -I {input.bam} \
+            -O {output})"
+
+
+rule BaseRecalibrator:
+    input:
+        bam="map/{sample}_merged_uniq_sorted_rg_dedupp_split.bam"
+    output: protected("map/{sample}_merged_uniq_sorted_rg_dedupp_split_recal.table")
+    params:
+        ref=refgenome,
+        dbsnp=DBspns
+    shell:
+        "(/home/emmanuel/software/gatk-4.1.8.0/gatk BaseRecalibrator -I {input.bam} \
+            -R {params.ref} \
+            --known-sites {params.dbsnp} \
+            -O {output})"
+
+rule ApplyBQSR:
+    input:
+        bam="map/{sample}_merged_uniq_sorted_rg_dedupp_split.bam",
+        bqsr="map/{sample}_merged_uniq_sorted_rg_dedupp_split_recal.table"
+    output:
+        protected("map/{sample}_merged_uniq_sorted_rg_dedupp_split_recal.bam")
+    params:
+        ref=refgenome
+    shell:
+        "(/home/emmanuel/software/gatk-4.1.8.0/gatk ApplyBQSR \
+            -R {params.ref} \
+            -I {input.bam} \
+            -bqsr {input.bqsr} \
+            -O {output})"
+
+rule HaplotypeCaller:
+    input:
+        bam="map/{sample}_merged_uniq_sorted_rg_dedupp_split_recal.bam"
+    params:
+        ref=refgenome,
+        stand_call_conf=30.0
+    output:
+        vcf="vcf/{sample}.vcf.gz",
+        index="vcf/{sample}.vcf.gz.tbi"
+    shell:
+        "(/home/emmanuel/software/gatk-4.1.8.0/gatk HaplotypeCaller \
+            -R {params.ref} \
+            -I {input.bam} \
+            --dont-use-soft-clipped-bases \
+            -stand-call-conf {params.stand_call_conf} \
+            -O {output.vcf})"
+
+
+rule IndexFeatureFile:
+    input: "vcf/{sample}_Hardfiltered_Q100_DP10_QD7.vcf.gz"
+    output: "vcf/{sample}_Hardfiltered_Q100_DP10_QD7.vcf.gz.tbi"
+    shell:
+        "/home/emmanuel/software/gatk-4.1.8.0/gatk IndexFeatureFile \
+            -I {input} -O {output}"
+
+rule VariantFiltration:
+    input:
+        vcf="vcf/{sample}.vcf.gz",
+        index="vcf/{sample}.vcf.gz.tbi"
+    output:
+        vcf=temp("vcf/{sample}_Hardfiltered.vcf.gz"),
+        index=temp("vcf/{sample}_Hardfiltered.vcf.gz.tbi")
+    params:
+        ref=refgenome,
+        nameFS="FS",
+        valFS="'FS > 60.0'",
+        nameQD="QD",
+        valQD="'QD < 2.0'",
+        nameSOR="SOR",
+        valSOR="'SOR > 3.0'",
+        nameMQ="MQ",
+        valMQ="'MQ < 40.0'"
+        #nameMQRS="MQRankSum",
+        #valMQRS="MQRankSum < -12.5",
+        #nameMQPRS="MQPosRankSum",
+        #valMQPRS="MQPosRankSum < -8.0"
+    shell:
+        "(/home/emmanuel/software/gatk-4.1.8.0/gatk VariantFiltration \
+        -R {params.ref} \
+        -V {input.vcf} \
+        --filter-name {params.nameFS} \
+        -filter {params.valFS} \
+        --filter-name {params.nameQD} \
+        -filter {params.valQD} \
+        --filter-name {params.nameSOR} \
+        -filter {params.valSOR} \
+        --filter-name {params.nameMQ} \
+        -filter {params.valMQ} \
+        -O {output.vcf})"
+
+rule filterVCF:
+    input:
+        vcg="vcf/{sample}_Hardfiltered.vcf.gz"
+    output:
+        "vcf/{sample}_Hardfiltered_Q100_DP10_QD7.vcf.gz"
+    params:
+        types="snps",
+        genotype="het",
+        expr_include="'QUAL>=100 && INFO/DP >=10 && INFO/QD >=7'",
+        filt="PASS",
+        out_type="z"
+    shell:
+        "(bcftools view -v {params.types} \
+        -g {params.genotype} \
+        -i {params.expr_include} \
+        -f {params.filt} -O {params.out_type} \
+        -o {output} {input})"
+
+
+rule VcfToTab:
+    input: 
+        vcf="vcf/{sample}_Hardfiltered_Q100_DP10_QD7.vcf.gz",
+        arg_tab="argt",
+        index="vcf/{sample}_Hardfiltered_Q100_DP10_QD7.vcf.gz.tbi"
+    output:
+        "table/{sample}_Hardfiltered_Q100_DP10_QD7.tab"
+    shell:
+        "(/home/emmanuel/software/gatk-4.1.8.0/gatk VariantsToTable \
+        -V {input.vcf} \
+        --arguments_file {input.arg_tab} \
+        -O {output})"
+
+
